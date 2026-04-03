@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
+import json
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
@@ -18,6 +19,15 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# In-memory session storage (teacher authentication)
+authenticated_users = {}
+
+# Load teacher credentials from JSON file
+teachers_file = Path(__file__).parent / "teachers.json"
+with open(teachers_file, 'r') as f:
+    teachers_data = json.load(f)
+    teachers = {t['username']: t['password'] for t in teachers_data['teachers']}
 
 # In-memory activity database
 activities = {
@@ -111,8 +121,12 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, token: str = None):
+    """Unregister a student from an activity (teacher only)"""
+    # Check authentication
+    if not token or token not in authenticated_users:
+        raise HTTPException(status_code=401, detail="Unauthorized: Teacher authentication required")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -130,3 +144,34 @@ def unregister_from_activity(activity_name: str, email: str):
     # Remove student
     activity["participants"].remove(email)
     return {"message": f"Unregistered {email} from {activity_name}"}
+
+
+@app.post("/login")
+def login(username: str, password: str):
+    """Authenticate a teacher and return a session token"""
+    # Validate credentials
+    if username not in teachers or teachers[username] != password:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # Generate a simple token (in production, use JWT)
+    token = f"{username}_{len(authenticated_users)}"
+    authenticated_users[token] = username
+    
+    return {"token": token, "message": f"Logged in as {username}"}
+
+
+@app.post("/logout")
+def logout(token: str):
+    """Logout a teacher and invalidate their session token"""
+    if token in authenticated_users:
+        del authenticated_users[token]
+        return {"message": "Logged out successfully"}
+    return {"message": "Already logged out"}
+
+
+@app.get("/auth-status")
+def auth_status(token: str = None):
+    """Check if a teacher is authenticated"""
+    if token and token in authenticated_users:
+        return {"authenticated": True, "username": authenticated_users[token]}
+    return {"authenticated": False}
